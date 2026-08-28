@@ -1,111 +1,474 @@
 # Security Onion SOC Investigation — vsFTPd Backdoor Exploitation & Post-Exploitation Detection
 
-Hands-on SOC investigation performed in an isolated VMware home lab using Kali Linux, Metasploitable 2 and Security Onion.
+> **Hands-on SOC investigation of a controlled vsFTPd 2.3.4 backdoor exploitation using Security Onion, Zeek, Suricata, PCAP analysis, and network correlation.**
 
-## Investigation flow
+---
 
-**Reconnaissance → Exploitation → Root Shell → PCAP Correlation → Zeek → Suricata → Post-Exploitation Investigation**
+## 📌 Project Overview
 
-## Objective
+This project documents a controlled cybersecurity investigation performed in an isolated VMware home lab.
 
-Determine what happened after a controlled exploitation of the vulnerable vsFTPd 2.3.4 service and establish conclusions from correlated network evidence rather than assumptions.
+The objective was to simulate an attacker exploiting the **vsFTPd 2.3.4 backdoor vulnerability**, establish a root-level command shell on the target, and investigate the resulting network activity using Security Onion.
 
-## Lab
+The investigation demonstrates how multiple sources of network telemetry can be correlated to reconstruct an attack:
 
-| System | Role | Address |
+**Reconnaissance → Exploitation → Root Shell → Network Evidence → Detection → Post-Exploitation File Retrieval**
+
+The investigation was performed against an intentionally vulnerable **Metasploitable 2** system in an isolated lab environment.
+
+---
+
+## 🎯 Investigation Objectives
+
+The investigation focused on determining:
+
+1. How the attacker identified the vulnerable service.
+2. Whether the vsFTPd 2.3.4 backdoor was successfully exploited.
+3. Whether a root-level shell was established.
+4. What network evidence confirmed the shell session.
+5. How Zeek recorded the backdoor connection.
+6. How Suricata detected the root-level response.
+7. Whether post-exploitation activity occurred after the shell was established.
+8. Whether additional connections, file activity, persistence, or data exfiltration were observed.
+
+---
+
+## 🏗️ Lab Architecture
+
+The investigation was performed in an isolated VMware environment.
+
+| Component | Role | IP Address |
 |---|---|---|
-| Kali Linux | Attacker simulation | `192.168.200.10` |
-| Metasploitable 2 | Deliberately vulnerable target | `192.168.200.100` |
-| Security Onion | Detection and investigation | `192.168.117.150` |
+| Kali Linux | Attacker / Investigation Source | `192.168.200.10` |
+| Metasploitable 2 | Vulnerable Target | `192.168.200.100` |
+| Security Onion | SIEM / Network Monitoring | `192.168.117.150` |
+| VMware VMnet2 | Isolated Attack Network | `192.168.200.0/24` |
+| VMware VMnet8 | NAT / Management Network | `192.168.117.0/24` |
 
-![Lab topology](architecture/Project2-Lab-Topology.svg)
+### Network Design
 
-## Key findings
+The attack and target systems communicated over the isolated VMnet2 network.
 
-- Nmap identified **vsFTPd 2.3.4 on TCP/21**.
-- Controlled exploitation produced a command shell with **`uid=0(root) gid=0(root)`**.
-- PCAP evidence showed backdoor shell traffic involving **TCP/6200**.
-- Zeek independently recorded the established connection from `192.168.200.10:40777` to `192.168.200.100:6200`.
-- Suricata generated **`GPL ATTACK_RESPONSE id check returned root`**, SID **2100498**, after observing the root-level response.
-- A controlled post-exploitation test generated an HTTP request for **`/test.txt`** from `192.168.200.100` to `192.168.200.10:8080`, using **Wget/1.10.2**.
-- The investigation therefore demonstrates both **successful root-shell establishment** and **one observable post-exploitation file-retrieval action**.
+Security Onion provided network monitoring and analysis capabilities including:
 
-## What was not observed
+- Zeek
+- Suricata
+- PCAP
+- Security Onion hunting and investigation tools
 
-The reviewed telemetry did not establish additional command-shell activity, persistence, additional file transfers beyond the documented `/test.txt` retrieval, or broader data exfiltration. These are reported as **not observed**, not as proof that they could never have occurred.
+![Lab Environment](architecture/01-lab-environment.png)
 
-## Evidence
+---
 
-### 1. Lab environment
-![Screenshot 1](evidence/Project2-Screenshot1-Lab-Environment.png)
+# 🔎 Investigation Timeline
 
-### 2. Nmap reconnaissance
-![Screenshot 2](evidence/Project2-Screenshot2-Nmap-Reconnaissance.png)
+## Phase 1 — Reconnaissance
 
-### 3. Successful exploitation
-![Screenshot 3](evidence/Project2-Screenshot3-Successful-Exploitation.png)
+The investigation began with Nmap service enumeration against the Metasploitable target.
 
-### 4. Security Onion detection
-![Screenshot 4](evidence/Project2-Screenshot4-Security-Onion-Detection.png)
+The scan identified:
 
-### 5. Packet-level correlation
-![Screenshot 5](evidence/Project2-Screenshot5-PCAP-Correlation.png)
+```text
+21/tcp open ftp vsftpd 2.3.4
+```
 
-### 6. Zeek connection evidence
-![Screenshot 6](evidence/Project2-Screenshot6-Zeek-Connection.png)
+The exposed vsFTPd 2.3.4 service was subsequently selected for the controlled exploitation exercise.
 
-Zeek `conn` telemetry correlates the command-shell session with attacker IP `192.168.200.10`, source port `40777`, target IP `192.168.200.100`, and destination port `6200`.
+### Evidence
 
-### 7. Suricata root-level backdoor response
-![Screenshot 7](evidence/Project2-Screenshot7-Suricata-Root-Detection.png)
+![Nmap Reconnaissance](screenshots/02-nmap-reconnaissance.png)
 
-Suricata matched SID `2100498`, **GPL ATTACK_RESPONSE id check returned root**, after observing `uid=0(root) gid=0(root)` in the response.
+**Key finding:**  
+The target exposed vsFTPd 2.3.4 on TCP/21, providing the service used for the controlled exploitation.
 
-### 8. Post-exploitation file retrieval
-![Screenshot 8](evidence/Project2-Screenshot8-Post-Exploitation-File-Retrieval.png)
+---
 
-The controlled post-exploitation test generated an HTTP request for `/test.txt` to `192.168.200.10:8080` using `Wget/1.10.2`. This provides direct network evidence of file retrieval following compromise.
+# 💥 Phase 2 — Controlled Exploitation
 
-## MITRE ATT&CK mapping
+The known vsFTPd 2.3.4 backdoor was exploited using the Metasploit Framework.
 
-| Technique | Use in this investigation |
+The exploitation process resulted in the vulnerable service spawning a backdoor shell.
+
+### Evidence
+
+![vsFTPd Exploitation](screenshots/03-vsftpd-exploitation-root-shell.png)
+
+The exploitation evidence shows:
+
+```text
+192.168.200.100:21
+vsFTPd 2.3.4
+
+UID: uid=0(root) gid=0(root)
+```
+
+A command shell session was subsequently established between Kali Linux and the target.
+
+---
+
+# 🔐 Phase 3 — Root Shell Establishment
+
+The investigation confirmed that the resulting shell operated with root-level privileges.
+
+The network session was established between:
+
+```text
+Kali:
+192.168.200.10:40777
+
+Target:
+192.168.200.100:6200
+```
+
+The shell returned:
+
+```text
+uid=0(root)
+gid=0(root)
+```
+
+### Security Onion Detection
+
+![Security Onion Root Shell Detection](screenshots/04-security-onion-root-shell-detection.png)
+
+**Key finding:**  
+The telemetry confirmed successful exploitation and root-level access on the intentionally vulnerable target.
+
+---
+
+# 📦 Phase 4 — Packet-Level Investigation
+
+PCAP analysis was used to validate the network activity independently of the higher-level Zeek and Suricata events.
+
+The packet sequence showed:
+
+- Connection to TCP/21
+- Triggering of the vsFTPd backdoor
+- Establishment of communication on TCP/6200
+- Bidirectional traffic between attacker and target
+- Continued packets consistent with an interactive shell session
+
+### Evidence
+
+![PCAP Backdoor Traffic](screenshots/05-pcap-backdoor-traffic.png)
+
+**Key finding:**  
+Packet-level evidence correlated with the Metasploit session and confirmed the TCP/6200 backdoor communication.
+
+---
+
+# 🌐 Phase 5 — Zeek Connection Evidence
+
+Zeek `conn.log` provided network-level connection metadata for the backdoor shell.
+
+The relevant connection was:
+
+```text
+Source:
+192.168.200.10:40777
+
+Destination:
+192.168.200.100:6200
+
+Protocol:
+TCP
+
+Connection State:
+S1
+```
+
+The connection remained established for approximately 10 seconds.
+
+### Evidence
+
+![Zeek Backdoor Connection](screenshots/06-zeek-backdoor-connection.png)
+
+**Key finding:**  
+Zeek independently recorded the TCP connection between the attacker and the backdoor service.
+
+This provided an additional telemetry layer that could be correlated with the PCAP and Metasploit evidence.
+
+---
+
+# 🚨 Phase 6 — Suricata Detection
+
+Suricata generated an alert associated with the root-level response from the compromised target.
+
+The relevant detection was:
+
+```text
+GPL ATTACK_RESPONSE id check returned root
+```
+
+The response contained:
+
+```text
+uid=0(root) gid=0(root)
+```
+
+### Evidence
+
+![Suricata Root Response](screenshots/07-suricata-root-response.png)
+
+**Key finding:**  
+Suricata detected a response from the target containing evidence of root-level access.
+
+The event was classified as:
+
+```text
+Category: Potentially Bad Traffic
+Severity: Medium
+Action: allowed
+```
+
+This demonstrates the difference between **detection** and **prevention**: the traffic was detected, but the rule did not block it.
+
+---
+
+# 🗂️ Phase 7 — Post-Exploitation File Retrieval
+
+Following establishment of the root shell, the investigation identified file retrieval activity.
+
+The compromised target retrieved:
+
+```text
+/test.txt
+```
+
+from the Kali HTTP server:
+
+```text
+192.168.200.10:8080
+```
+
+The HTTP request used:
+
+```text
+GET /test.txt
+```
+
+with:
+
+```text
+HTTP 200 OK
+```
+
+### Evidence
+
+![Incident Timeline](screenshots/08-project-2-incident-timeline.png)
+
+The timeline consolidates the investigation evidence from reconnaissance through exploitation, root shell establishment, network detection, and the observed file retrieval activity.
+
+---
+
+# 🔬 Post-Exploitation Assessment
+
+A specific objective of this investigation was to determine:
+
+> **After the root shell was established, what did the attacker actually do?**
+
+The available telemetry was reviewed across:
+
+- `zeek.conn`
+- `zeek.http`
+- `zeek.file`
+- `suricata.alert`
+- PCAP
+
+### Observed
+
+The investigation identified:
+
+- Successful vsFTPd 2.3.4 exploitation
+- Root-level shell establishment
+- TCP/6200 backdoor communication
+- HTTP retrieval of `/test.txt`
+- File transfer telemetry associated with the retrieved file
+
+### Not Observed
+
+Within the investigated telemetry and time window, the investigation did **not** identify:
+
+- Additional command-shell activity
+- SSH or Telnet activity following exploitation
+- Additional file transfers
+- Persistence mechanisms
+- Credential harvesting
+- Lateral movement
+- Data exfiltration
+- Suspicious DNS activity
+- Additional high-severity Suricata alerts
+
+This distinction is important in SOC analysis: **absence of observed evidence within the investigated telemetry does not prove that an activity could never have occurred.**
+
+---
+
+# 🧩 MITRE ATT&CK Mapping
+
+| Technique | ID | Relevance |
+|---|---|---|
+| Network Service Scanning | **T1046** | Nmap reconnaissance identified services exposed by the target. |
+| Exploitation for Client Execution / Service Exploitation | **T1190** | The vulnerable vsFTPd service was exploited in the controlled lab environment. |
+| Command and Scripting Interpreter | **T1059** | A command shell was established following successful exploitation. |
+
+> **Note:** ATT&CK mappings are used here as an analytical framework for the lab exercise. The investigation evidence directly demonstrates network scanning, exploitation, and shell access; additional post-exploitation techniques were not observed in the available telemetry.
+
+---
+
+# 🛡️ Detection & Investigation Stack
+
+### Security Onion
+
+Used as the central security monitoring and investigation platform.
+
+### Zeek
+
+Used to investigate:
+
+- Network connections
+- HTTP activity
+- File-related network metadata
+- Connection duration
+- Source/destination relationships
+
+### Suricata
+
+Used for:
+
+- Signature-based detection
+- Attack-response detection
+- Root-level response identification
+
+### PCAP
+
+Used for:
+
+- Packet-level validation
+- TCP session reconstruction
+- Correlation with Zeek and Suricata telemetry
+
+### Nmap
+
+Used for:
+
+- Service discovery
+- Version enumeration
+- Reconnaissance
+
+### Metasploit Framework
+
+Used to perform the controlled vsFTPd 2.3.4 exploitation.
+
+---
+
+# 📸 Evidence Gallery
+
+| Evidence | Description |
 |---|---|
-| **T1046 — Network Service Scanning** | Nmap reconnaissance of the vulnerable target |
-| **T1190 — Exploit Public-Facing Application** | Controlled exploitation of the exposed vsFTPd service in the lab |
-| **T1059 — Command and Scripting Interpreter** | Command shell obtained after exploitation |
-| **T1105 — Ingress Tool Transfer** | Controlled HTTP retrieval of `/test.txt` during the post-exploitation exercise |
+| [Screenshot 1](architecture/01-lab-environment.png) | Isolated VMware lab architecture |
+| [Screenshot 2](screenshots/02-nmap-reconnaissance.png) | Nmap service enumeration |
+| [Screenshot 3](screenshots/03-vsftpd-exploitation-root-shell.png) | Controlled vsFTPd exploitation |
+| [Screenshot 4](screenshots/04-security-onion-root-shell-detection.png) | Security Onion detection |
+| [Screenshot 5](screenshots/05-pcap-backdoor-traffic.png) | PCAP packet-level evidence |
+| [Screenshot 6](screenshots/06-zeek-backdoor-connection.png) | Zeek connection evidence |
+| [Screenshot 7](screenshots/07-suricata-root-response.png) | Suricata root-response detection |
+| [Screenshot 8](screenshots/08-project-2-incident-timeline.png) | Complete incident timeline |
 
-> **Lab note:** ATT&CK mappings describe the simulated behaviors demonstrated in this controlled environment; they do not imply that every technique was performed against a real production system.
+---
 
-## SOC analyst assessment
+# 📊 Key Findings
 
-The evidence supports a high-confidence finding of successful exploitation and root-level shell establishment because multiple independent telemetry sources corroborate the event:
+### 1. Vulnerable Service Identified
 
-1. Metasploit reported a root shell.
-2. PCAP showed the corresponding TCP/6200 traffic.
-3. Zeek recorded the connection.
-4. Suricata independently detected the root-level response.
+Nmap identified **vsFTPd 2.3.4** running on TCP/21.
 
-The subsequent `/test.txt` HTTP retrieval provides a separate, observable post-exploitation action. The reviewed telemetry did **not** establish persistence, privilege escalation beyond the root shell already obtained, or additional command execution.
+### 2. Exploitation Successful
 
-## Skills demonstrated
+The controlled Metasploit exercise successfully triggered the vsFTPd backdoor.
 
-**Security Onion · SOC Investigation · Network Security Monitoring · Zeek · Suricata · PCAP Analysis · Network Traffic Analysis · Packet Analysis · Threat Detection · Incident Investigation · Nmap · Metasploit · SIEM · Evidence Correlation · Incident Response · SOC Reporting · MITRE ATT&CK Mapping**
+### 3. Root Access Confirmed
 
-## What I learned
+The resulting shell operated with:
 
-- How to correlate multiple telemetry sources instead of relying on a single alert.
-- How Zeek `conn` records can establish communication relationships and ports involved in an intrusion.
-- How Suricata signatures can identify meaningful payload content even when the underlying connection is otherwise a normal TCP session.
-- How packet captures can validate SIEM/NSM observations.
-- How to distinguish **detection** from **prevention**: the Suricata alert was marked `allowed`.
-- How to document negative findings carefully: **not observed** is different from **did not happen**.
-- How to turn raw SOC telemetry into a defensible incident narrative.
+```text
+uid=0(root)
+gid=0(root)
+```
 
-## Portfolio takeaway
+### 4. Network Evidence Correlated
 
-This project demonstrates the ability to **collect, correlate, investigate and communicate security evidence** across multiple telemetry sources—not merely execute security tools.
+PCAP, Zeek, and Suricata independently provided evidence supporting the same attack sequence.
 
-## Scope
+### 5. Backdoor Communication Detected
 
-Authorized activity performed against deliberately vulnerable virtual machines in a controlled home-lab environment.
+The shell communication occurred through TCP/6200.
+
+### 6. Post-Exploitation File Retrieval Observed
+
+The investigation identified retrieval of `/test.txt` from the Kali HTTP server.
+
+### 7. No Broader Post-Exploitation Activity Observed
+
+No additional persistence, lateral movement, credential harvesting, or data exfiltration was identified within the investigated telemetry and time window.
+
+---
+
+# 🧠 What I Learned
+
+This investigation reinforced several practical SOC analyst skills:
+
+- How to investigate an attack from network telemetry rather than relying on a single alert.
+- How to correlate events across Zeek, Suricata, and PCAP.
+- How source/destination IPs and ports can connect seemingly separate events.
+- How to distinguish reconnaissance from exploitation.
+- How to validate root-level access through network evidence.
+- How to investigate activity following successful exploitation.
+- How to document both **positive findings and negative findings**.
+- How to build an evidence-driven incident timeline.
+- How detection rules can identify malicious activity without necessarily preventing it.
+- How to communicate technical findings in a structured incident-investigation format.
+
+---
+
+# 💼 SOC Analyst Skills Demonstrated
+
+- Security Operations Center (SOC) Investigation
+- Security Onion
+- Zeek
+- Suricata
+- PCAP Analysis
+- Network Traffic Analysis
+- Network Forensics
+- Threat Detection
+- Incident Investigation
+- Alert Analysis
+- Log Analysis
+- Event Correlation
+- Nmap
+- Metasploit
+- MITRE ATT&CK
+- Linux
+- TCP/IP Networking
+- Evidence-Based Reporting
+
+---
+
+# ⚠️ Lab Disclaimer
+
+This project was conducted exclusively in an isolated, intentionally vulnerable VMware home lab using systems designed for security training.
+
+The exploitation activity was authorized and performed for educational and defensive security analysis purposes.
+
+No third-party systems or production environments were targeted.
+
+---
+
+# 👤 Analyst
+
+**Taiwo H Ibrahim**
+
+Cybersecurity / SOC Analyst Portfolio Project
+
+Focus areas:
+
+**SOC Operations | Network Security | Threat Detection | Security Monitoring | Incident Investigation**
